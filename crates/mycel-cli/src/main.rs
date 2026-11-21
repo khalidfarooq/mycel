@@ -8,6 +8,8 @@ use mycel_net::NetworkConfig;
 use mycel_node::NodeDaemon;
 use mycel_proto::{HardwareProfile, TaskKind, TaskSpec};
 
+mod tui;
+
 #[derive(Parser)]
 #[command(name = "mycel")]
 #[command(author = "Khalid Farooq <wandererkhalid@gmail.com>")]
@@ -49,6 +51,9 @@ enum Commands {
 
     /// Run an interactive multi-node mesh simulation & auction demo
     Demo,
+
+    /// Launch the interactive real-time terminal TUI dashboard
+    Tui,
 }
 
 #[tokio::main]
@@ -133,6 +138,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::Demo => {
             run_cool_multi_node_demo().await?;
+        }
+
+        Commands::Tui => {
+            tui::run_dashboard().await?;
         }
     }
 

@@ -92,12 +92,18 @@ cargo build --release
 cargo run -p mycel-cli -- demo
 ```
 
-### 3. Initialize Node Identity
+### 3. Launch the Interactive Real-Time TUI Dashboard
+Experience live cluster topology, Spore auction tickers, and CRDT metrics:
+```bash
+cargo run -p mycel-cli -- tui
+```
+
+### 4. Initialize Node Identity
 ```bash
 ./target/release/mycel init
 ```
 
-### 4. Dispatch a Task to the Mesh
+### 5. Dispatch a Task to the Mesh
 ```bash
 ./target/release/mycel dispatch --cmd "cargo test --workspace" --kind test --budget 100
 ```
