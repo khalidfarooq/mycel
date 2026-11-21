@@ -1,0 +1,6 @@
+[package]
+name = "mycel-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true

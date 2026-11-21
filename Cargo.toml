@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mycel-proto",
+    "crates/mycel-crypto",
+    "crates/mycel-net",
+    "crates/mycel-auction",
+    "crates/mycel-crdt",
+    "crates/mycel-node",
+    "crates/mycel-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Khalid Farooq <wandererkhalid@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/khalidfarooq/mycel"
+homepage = "https://github.com/khalidfarooq/mycel"
+description = "The Sovereign, Zero-Cloud P2P Mesh Network & Compute Exchange for Autonomous Edge Agents"
+
+[workspace.dependencies]
+tokio = { version = "1.38", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+ed25519-dalek = { version = "=2.1.1", features = ["rand_core", "serde"] }
+rand = "=0.8.5"
+getrandom = "=0.2.15"
+zeroize = "=1.8.1"
+base64ct = "=1.6.0"
+sha2 = "=0.10.8"
+hex = "0.4"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.5", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.8", default-features = false, features = ["v4", "serde"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Internal crates
+mycel-proto = { path = "crates/mycel-proto" }
+mycel-crypto = { path = "crates/mycel-crypto" }
+mycel-net = { path = "crates/mycel-net" }
+mycel-auction = { path = "crates/mycel-auction" }
+mycel-crdt = { path = "crates/mycel-crdt" }
+mycel-node = { path = "crates/mycel-node" }
