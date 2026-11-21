@@ -11,7 +11,8 @@
 > **The Sovereign, Zero-Cloud P2P Mesh Network & Compute Exchange for Autonomous Edge Agents**  
 > *Zero Servers. Zero Cloud APIs. Zero Centralized Orchestration. 100% Peer-to-Peer.*
 
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%2FApache--2.0-blue.svg)](#)
+[![CI](https://github.com/khalidfarooq/mycel/actions/workflows/ci.yml/badge.svg)](https://github.com/khalidfarooq/mycel/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#)
 [![Rust 1.83+](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](#)
 [![Architecture: Local-First](https://img.shields.io/badge/Architecture-Local--First-brightgreen.svg)](#)
 
