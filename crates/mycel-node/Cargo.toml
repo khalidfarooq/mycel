@@ -4,3 +4,14 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+
+[dependencies]
+mycel-proto = { workspace = true }
+mycel-crypto = { workspace = true }
+mycel-net = { workspace = true }
+mycel-auction = { workspace = true }
+mycel-crdt = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
