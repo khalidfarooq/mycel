@@ -4,3 +4,21 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+
+[[bin]]
+name = "mycel"
+path = "src/main.rs"
+
+[dependencies]
+mycel-proto = { workspace = true }
+mycel-crypto = { workspace = true }
+mycel-net = { workspace = true }
+mycel-auction = { workspace = true }
+mycel-crdt = { workspace = true }
+mycel-node = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
