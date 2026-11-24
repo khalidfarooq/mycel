@@ -9,6 +9,7 @@ license.workspace = true
 mycel-proto = { workspace = true }
 mycel-crypto = { workspace = true }
 tokio = { workspace = true }
+socket2 = { workspace = true }
 futures = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
