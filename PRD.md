@@ -1,25 +1,23 @@
 # 🍄 MYCEL: Architecture Specification & RFC v1.0
-> **The Sovereign, Zero-Cloud P2P Mesh Network & Compute Exchange for Autonomous Edge Agents**
+> **Sovereign, Zero-Cloud P2P Mesh Network & Compute Exchange for Autonomous Edge Agents**
 
 ---
 
 ## 1. Executive Summary
 
-Autonomous AI agents (such as Claude Code, Google Antigravity, and Cursor) are currently tethered to centralized cloud infrastructure: centralized task coordinators, cloud databases (Postgres, Redis), and remote API endpoints. When network connectivity drops, API rate limits hit, or cloud orchestrators fail, multi-agent workflows collapse.
+Autonomous AI agents often depend on centralized task coordinators, cloud databases, and remote API endpoints. When WAN connectivity drops or centralized orchestrators are unavailable, multi-agent workflows stall.
 
-**Mycel** is an open-source, local-first, peer-to-peer mesh network and decentralized compute exchange written in **Rust**. Built on `libp2p` and Conflict-Free Replicated Data Types (CRDTs), Mycel enables heterogeneous edge devices (MacBooks, Linux workstations, edge servers, Raspberry Pis) to autonomously discover one another over local Wi-Fi / Bluetooth / LAN, establish cryptographically verified peer identities, and form an unkillable, partition-tolerant hivemind.
-
-Through the **Spore Reverse-Auction Protocol**, agents dynamically delegate compute-intensive sub-tasks (test execution, code compilation, sandbox verification, local SLM inference) to neighboring idle nodes in the mesh with microsecond scheduling overhead.
+**Mycel** is an open-source, local-first, peer-to-peer mesh network and decentralized compute exchange written in **Rust**. Mycel enables edge machines on a local network (macOS and Linux hosts) to discover one another via UDP beacons, establish Ed25519-authenticated **X25519 + ChaCha20-Poly1305 AEAD** encrypted TCP links, replicate state with Last-Write-Wins **Delta-CRDTs**, and delegate work via the **Spore Reverse-Auction Protocol**.
 
 ---
 
 ## 2. Core Architectural Principles
 
-1. **Zero-Cloud Dependency:** Complete operation without external servers, centralized relays, or third-party orchestrators.
-2. **Cryptographic Provenance:** Every node identity, task dispatch, bid, and execution result is signed with Ed25519 keys.
-3. **Partition Tolerance & Air-Gap Resilience:** If WAN connectivity terminates, the local mesh continues operating; state divergence is deterministically resolved upon reconnection using Delta-CRDTs.
-4. **Heterogeneous Hardware Tiering:** Nodes broadcast hardware profiles (Metal GPU, CUDA, CPU core count, RAM headroom, local SLMs) so tasks are automatically routed to optimal hardware.
-5. **Zero-Overhead Memory Footprint:** Built natively in Rust for sub-10ms peer discovery, <1ms gossip routing, and minimal memory overhead.
+1. **Zero-Cloud Dependency:** Operates directly over LAN or loopback TCP/UDP without external relays or central coordinators.
+2. **Cryptographic Provenance & Transport Confidentiality:** Every peer identity is backed by an Ed25519 keypair (`12D3KooW...` derived from the public key). Handshakes exchange signed ephemeral X25519 keys, and all post-handshake TCP frames are encrypted and authenticated with ChaCha20-Poly1305 AEAD and monotonic 96-bit sequence nonces.
+3. **Partition-Tolerant State Convergence:** State updates write to a local LWW Delta-CRDT store with Lamport logical clocks (`CrdtStore`), broadcast `MeshMessage::Delta` across connected peers, and exchange `MeshMessage::CrdtSnapshot` when peers connect.
+4. **Live Hardware-Aware Routing:** Nodes detect host CPU cores, physical RAM (`sysctl hw.memsize` on macOS, `/proc/meminfo` on Linux), 1-minute load average (`libc::getloadavg`), Metal/CUDA availability, and configured local SLMs (`MYCEL_SLM_MODEL`).
+5. **Real Isolated Execution:** `TaskExecutor` runs `BashScript`, `TestSuite`, `RustCompilation`, and `SlmInference` (against a configured local HTTP endpoint such as Ollama) inside per-task working directories.
 
 ---
 
@@ -27,38 +25,38 @@ Through the **Spore Reverse-Auction Protocol**, agents dynamically delegate comp
 
 ```text
                +-------------------------------------------------------+
-               |                  Autonomous AI Agent                  |
-               |       (Claude Code / Google Antigravity / CLI)        |
+               |               CLI / Autonomous Agent                  |
+               |         (mycel dispatch / demo / tui / start)         |
                +---------------------------+---------------------------+
-                                           | IPC / Stdio / API
+                                           |
                                            v
                +-------------------------------------------------------+
-               |                     Mycel Node                        |
+               |                     NodeDaemon                        |
                |                                                       |
                |  +--------------------+       +--------------------+  |
                |  |  Identity & Crypto |       |   Spore Auction    |  |
-               |  |  (Ed25519 Keypair) |       |  (RFQ / Bids / SLA)|  |
+               |  |  Ed25519 + X25519  |       |  (RFQ / Bids / SLA)|  |
                |  +---------+----------+       +---------+----------+  |
                |            |                            |             |
                |            +-------------+--------------+             |
                |                          |                            |
                |  +-----------------------v-------------------------+  |
-               |  |              Distributed CRDT Memory            |  |
-               |  |         (Active Swarm State & Task Log)         |  |
+               |  |              Delta-CRDT Store                   |  |
+               |  |    (Lamport Clock State & Peer Heartbeats)      |  |
                |  +-----------------------+-------------------------+  |
                |                          |                            |
                |  +-----------------------v-------------------------+  |
-               |  |                libp2p Swarm Layer               |  |
-               |  |  [mDNS Discovery]  [QUIC Transport]  [Gossipsub]|  |
+               |  |                 MeshNetwork                     |  |
+               |  |  [UDP Multicast/Broadcast]  [AEAD TCP Framing]  |  |
                |  +-----------------------+-------------------------+  |
                +--------------------------+----------------------------+
                                           |
                       +-------------------+-------------------+
-                      | Encrypted P2P Wire (Noise Protocol)   |
+                      | ChaCha20-Poly1305 AEAD Encrypted TCP  |
                       v                                       v
          +-------------------------+             +-------------------------+
          |     Neighbor Node A     |             |     Neighbor Node B     |
-         | (MacBook M3 Max / Metal)|             | (Linux Workstation / CPU|
+         |  (Coordinator / Worker) |             |        (Worker)         |
          +-------------------------+             +-------------------------+
 ```
 
@@ -66,48 +64,37 @@ Through the **Spore Reverse-Auction Protocol**, agents dynamically delegate comp
 
 ## 4. The "Spore" Reverse-Auction Protocol
 
-The **Spore Protocol** governs how work is assigned across the mesh without a master coordinator:
+The **Spore Protocol** assigns compute tasks across connected peers without a static master scheduler:
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant A as Originator Node (MacBook)
-    participant M as Mesh Gossip (Gossipsub)
-    participant B as Worker Node B (Linux 32-Core)
-    participant C as Worker Node C (Mac Mini)
+    participant A as Originator Node
+    participant M as Connected Encrypted Peers
+    participant B as Worker Node B
+    participant C as Worker Node C
 
-    A->>M: Publish Task RFQ (Task spec, SLA limit, Hardware reqs)
+    A->>M: Broadcast RfqMessage (TaskSpec, budget, hardware constraints)
     M-->>B: Receive RFQ
     M-->>C: Receive RFQ
-    Note over B,C: Compute Bid = f(idle_cores, ram_headroom, queue_depth)
-    B->>A: Submit Cryptographic Bid (Price/Priority, Ed25519 Signed)
-    C->>A: Submit Cryptographic Bid (Price/Priority, Ed25519 Signed)
-    Note over A: Evaluate Bids within Auction Window (200ms)
-    A->>B: Award WorkContract(TaskPayload, Signature)
-    Note over B: Execute Task in Sandbox
-    B->>A: Stream ExecutionResult + SignedReceipt
-    A->>M: Gossip TaskCompletion to CRDT State
+    Note over B,C: Evaluate HardwareProfile & compute Bid = f(cpu_cores, load_average)
+    B->>A: Send Ed25519-Signed BidMessage
+    C->>A: Send Ed25519-Signed BidMessage
+    Note over A: Verify bid signatures & rank verified bids after bid_window_ms
+    A->>B: Send Signed WorkContract(TaskSpec, agreed_price)
+    Note over B: Verify WorkContract signature & execute in task working dir
+    B->>A: Send Signed ExecutionResult
+    Note over A: Verify ExecutionResult signature & replicate contract status via CRDT Delta
 ```
 
 ---
 
 ## 5. Crate Architecture (Rust Workspace)
 
-- **`mycel-proto`**: Core serializable types, protocol buffers/bincode, Spore RFQ, Bid, WorkContract, SignedReceipt, NodeCapability schemas.
-- **`mycel-crypto`**: Ed25519 keypair generation, PeerId derivation, message signing and verification, SHA256 integrity checks.
-- **`mycel-net`**: libp2p network transport, mDNS discovery, QUIC, Noise encryption, Yamux multiplexing, and Gossipsub pub/sub topics.
-- **`mycel-auction`**: State machine for reverse-auction compute market (Auctioneer and Bidder roles).
-- **`mycel-crdt`**: In-memory distributed state store with logical clocks for cluster membership and task history.
-- **`mycel-node`**: Core daemon uniting networking, task dispatching, sandboxed execution, and event bus.
-- **`mycel-cli`**: Command-line interface and interactive Ratatui TUI dashboard.
-
----
-
-## 6. Milestone Plan
-
-1. **Phase 1: Foundation & Workspace**: Crate structure, proto wire schemas, and crypto identities.
-2. **Phase 2: P2P Swarm & Discovery**: libp2p runtime with zero-config mDNS and Gossipsub routing.
-3. **Phase 3: Spore Auction Engine**: RFQ broadcast, distributed bidding, award consensus, and execution receipts.
-4. **Phase 4: CRDT Distributed State**: Partition-tolerant cluster memory and delta sync.
-5. **Phase 5: CLI & Node Daemon**: Interactive CLI commands and multi-node terminal runner.
-6. **Phase 6: Multi-Node Terminal Demo**: Animated simulation demonstrating live peer discovery, task auction, and execution.
+- **`mycel-proto`**: Serializable wire schemas, `HardwareProfile::detect()`, `SignedHandshake`, `PeerDiscoveryBeacon`, `RfqMessage`, `BidMessage`, `WorkContract`, `ExecutionResult`, and `CrdtDelta`.
+- **`mycel-crypto`**: Ed25519 `NodeIdentity` signing/verification, peer-ID binding verification, and `ring` X25519 + HKDF-SHA256 + ChaCha20-Poly1305 AEAD ciphers.
+- **`mycel-net`**: Length-delimited encrypted TCP transport, signed X25519 handshakes, and UDP LAN peer auto-discovery (`SO_REUSEADDR`/`SO_REUSEPORT`).
+- **`mycel-auction`**: Reverse-auction state machine with Ed25519 signature verification on bids, contracts, and execution results.
+- **`mycel-crdt`**: In-memory LWW Delta-CRDT store with Lamport logical clocks and snapshot export.
+- **`mycel-node`**: `NodeDaemon` event routing, CRDT delta/snapshot replication, and `TaskExecutor`.
+- **`mycel-cli`**: CLI (`init`, `start`, `dispatch`, `demo`, `tui`) and Ratatui live cluster dashboard.

@@ -1,3 +1,8 @@
+use std::collections::HashMap;
+use std::io;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -11,9 +16,6 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
     Terminal,
 };
-use std::io;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use mycel_crypto::NodeIdentity;
@@ -21,180 +23,355 @@ use mycel_net::NetworkConfig;
 use mycel_node::NodeDaemon;
 use mycel_proto::{HardwareProfile, TaskKind, TaskSpec};
 
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let mut stdout = io::stdout();
+        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+    }
+}
+
 pub struct TuiState {
     pub log_events: Vec<String>,
     pub total_auctions: u64,
     pub completed_tasks: u64,
-    pub cluster_cores: usize,
-    pub cluster_ram_gb: usize,
-    pub lamport_clock: u64,
+    pub failed_tasks: u64,
+    pub handshake_ms: f64,
 }
 
-pub async fn run_dashboard() -> Result<(), Box<dyn std::error::Error>> {
+fn format_ram(ram_mb: u64) -> String {
+    if ram_mb >= 1024 {
+        format!("{:.1} GB", ram_mb as f64 / 1024.0)
+    } else {
+        format!("{} MB", ram_mb)
+    }
+}
+
+fn format_accel(hw: &HardwareProfile) -> &'static str {
+    if hw.has_metal {
+        "Metal"
+    } else if hw.has_cuda {
+        "CUDA"
+    } else {
+        "CPU"
+    }
+}
+
+pub async fn run_dashboard(max_seconds: Option<u64>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut peer_names: HashMap<String, String> = HashMap::new();
+
+    let id_coord = NodeIdentity::generate();
+    let hw_coord = HardwareProfile::detect();
+    let node_coord = NodeDaemon::start(
+        id_coord.clone(),
+        "coord",
+        hw_coord.clone(),
+        NetworkConfig::default(),
+    )
+    .await?;
+    peer_names.insert(id_coord.peer_id().to_string(), "coord".into());
+
+    let id_worker_a = NodeIdentity::generate();
+    let hw_worker_a = HardwareProfile::detect();
+    let node_worker_a = NodeDaemon::start(
+        id_worker_a.clone(),
+        "worker-1",
+        hw_worker_a.clone(),
+        NetworkConfig::default(),
+    )
+    .await?;
+    peer_names.insert(id_worker_a.peer_id().to_string(), "worker-1".into());
+
+    let id_worker_b = NodeIdentity::generate();
+    let hw_worker_b = HardwareProfile::detect();
+    let node_worker_b = NodeDaemon::start(
+        id_worker_b.clone(),
+        "worker-2",
+        hw_worker_b.clone(),
+        NetworkConfig::default(),
+    )
+    .await?;
+    peer_names.insert(id_worker_b.peer_id().to_string(), "worker-2".into());
+
+    let hs_start = Instant::now();
+    let _ = node_worker_a
+        .network
+        .connect_peer(node_coord.network.actual_tcp_addr)
+        .await;
+    let _ = node_worker_b
+        .network
+        .connect_peer(node_coord.network.actual_tcp_addr)
+        .await;
+    let handshake_ms = hs_start.elapsed().as_secs_f64() * 1000.0;
+
+    // Wait briefly for PeerDiscovered events to populate CRDT peer table
+    let wait_deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < wait_deadline {
+        if node_coord.list_peers().len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+
+    let peer_names = Arc::new(peer_names);
+    let state = Arc::new(Mutex::new(TuiState {
+        log_events: vec![
+            format!(
+                "✓ Mesh ready: Ed25519 + X25519 + ChaCha20-Poly1305 ({:.2}ms)",
+                handshake_ms
+            ),
+            format!(
+                "▸ Local Coordinator: {} ({} cores · {})",
+                node_coord.node_name,
+                hw_coord.cpu_cores,
+                format_ram(hw_coord.ram_mb)
+            ),
+            format!(
+                "▸ Connected Workers: {} peers active over encrypted TCP",
+                node_coord.network.connected_peer_count().await
+            ),
+            "⚡ Spore reverse-auction engine ready — press [d], [r], or [s]".into(),
+        ],
+        total_auctions: 0,
+        completed_tasks: 0,
+        failed_tasks: 0,
+        handshake_ms,
+    }));
+
     enable_raw_mode()?;
+    let _guard = TerminalGuard;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Boot 3 background cluster nodes for live monitoring
-    let id_coord = NodeIdentity::generate();
-    let hw_coord = HardwareProfile {
-        cpu_cores: 16,
-        ram_mb: 65536,
-        has_metal: true,
-        has_cuda: false,
-        available_slms: vec!["gemma-2-27b".into()],
-        load_average: 0.12,
-    };
-    let node_coord = NodeDaemon::start(id_coord, "MacBook-M3-Coordinator", hw_coord, NetworkConfig::default()).await?;
-
-    let id_worker_a = NodeIdentity::generate();
-    let hw_worker_a = HardwareProfile {
-        cpu_cores: 64,
-        ram_mb: 131072,
-        has_metal: false,
-        has_cuda: true,
-        available_slms: vec!["llama-3.3-70b".into()],
-        load_average: 0.28,
-    };
-    let node_worker_a = NodeDaemon::start(id_worker_a, "Linux-Workstation-64Core", hw_worker_a, NetworkConfig::default()).await?;
-
-    let id_worker_b = NodeIdentity::generate();
-    let hw_worker_b = HardwareProfile {
-        cpu_cores: 8,
-        ram_mb: 16384,
-        has_metal: true,
-        has_cuda: false,
-        available_slms: vec!["gemma-2-2b".into()],
-        load_average: 0.05,
-    };
-    let node_worker_b = NodeDaemon::start(id_worker_b, "MacMini-Edge-01", hw_worker_b, NetworkConfig::default()).await?;
-
-    // Connect mesh
-    let _ = node_worker_a.network.connect_peer(node_coord.network.actual_tcp_addr).await;
-    let _ = node_worker_b.network.connect_peer(node_coord.network.actual_tcp_addr).await;
-
-    let state = Arc::new(Mutex::new(TuiState {
-        log_events: vec![
-            "✓ Mesh initialized: Ed25519 Mutual Handshake Complete".into(),
-            "▸ Node connected: MacBook-M3-Coordinator (16 cores · 64GB)".into(),
-            "▸ Node connected: Linux-Workstation-64Core (64 cores · 128GB · CUDA)".into(),
-            "▸ Node connected: MacMini-Edge-01 (8 cores · 16GB · Metal)".into(),
-            "⚡ Spore reverse-auction engine active & listening on gossipsub".into(),
-        ],
-        total_auctions: 0,
-        completed_tasks: 0,
-        cluster_cores: 88,
-        cluster_ram_gb: 208,
-        lamport_clock: 5,
-    }));
-
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
+    let start_time = Instant::now();
 
     loop {
+        if let Some(secs) = max_seconds {
+            if start_time.elapsed() >= Duration::from_secs(secs) {
+                break;
+            }
+        }
+
+        let active_peer_count = node_coord.network.connected_peer_count().await;
+        let peers = node_coord.list_peers();
+        let lamport_clock = node_coord.crdt.lamport_clock();
+        let crdt_entries = node_coord.crdt.len();
+
         {
             let s = state.lock().await;
             terminal.draw(|f| {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(3), // Header
-                        Constraint::Min(14),   // Main body
-                        Constraint::Length(3), // Footer
+                        Constraint::Length(3),
+                        Constraint::Min(14),
+                        Constraint::Length(3),
                     ])
                     .split(f.size());
 
-                // 1. Header
                 let header_text = vec![Line::from(vec![
-                    Span::styled(" 🍄 MYCEL ", Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD)),
-                    Span::raw("— Sovereign, Zero-Cloud P2P Mesh Network & Compute Exchange  "),
-                    Span::styled("● 3 PEERS ACTIVE", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
-                    Span::raw("  [Latency: 0.02ms · Noise Encrypted]"),
+                    Span::styled(
+                        " 🍄 MYCEL ",
+                        Style::default()
+                            .fg(Color::LightCyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("— Sovereign P2P Mesh & Spore Exchange  "),
+                    Span::styled(
+                        format!("● {} REMOTE PEERS", active_peer_count),
+                        Style::default()
+                            .fg(Color::LightGreen)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!(
+                        "  [X25519+ChaCha20 · HS {:.2}ms]",
+                        s.handshake_ms
+                    )),
                 ])];
-                let header = Paragraph::new(header_text).block(Block::default().borders(Borders::ALL).style(Style::default().fg(Color::DarkGray)));
+                let header = Paragraph::new(header_text).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .style(Style::default().fg(Color::DarkGray)),
+                );
                 f.render_widget(header, chunks[0]);
 
-                // 2. Main Body: 2 Columns
                 let body_chunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
                     .split(chunks[1]);
 
-                // Left Column: Node Topology Table + Cluster Gauges
                 let left_chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(8), Constraint::Min(6)])
+                    .constraints([Constraint::Length(9), Constraint::Min(6)])
                     .split(body_chunks[0]);
 
-                let rows = vec![
-                    Row::new(vec!["MacBook-M3", "Coordinator", "16 Cores", "64 GB", "Metal", "0.12", "ONLINE"])
-                        .style(Style::default().fg(Color::Cyan)),
-                    Row::new(vec!["Linux-64Core", "Worker", "64 Cores", "128 GB", "CUDA", "0.28", "ONLINE"])
+                let mut total_cores = node_coord.hardware.cpu_cores;
+                let mut total_ram_mb = node_coord.hardware.ram_mb;
+                let mut rows = vec![Row::new(vec![
+                    node_coord.node_name.clone(),
+                    "Coordinator".to_string(),
+                    format!("{} Cores", node_coord.hardware.cpu_cores),
+                    format_ram(node_coord.hardware.ram_mb),
+                    format_accel(&node_coord.hardware).to_string(),
+                    format!("{:.2}", node_coord.hardware.load_average),
+                    "ONLINE".to_string(),
+                ])
+                .style(Style::default().fg(Color::Cyan))];
+
+                let mut sorted_peers = peers.clone();
+                sorted_peers.sort_by(|a, b| a.node_name.cmp(&b.node_name));
+                for p in &sorted_peers {
+                    total_cores += p.hardware.cpu_cores;
+                    total_ram_mb += p.hardware.ram_mb;
+                    rows.push(
+                        Row::new(vec![
+                            p.node_name.clone(),
+                            "Worker".to_string(),
+                            format!("{} Cores", p.hardware.cpu_cores),
+                            format_ram(p.hardware.ram_mb),
+                            format_accel(&p.hardware).to_string(),
+                            format!("{:.2}", p.hardware.load_average),
+                            "ONLINE".to_string(),
+                        ])
                         .style(Style::default().fg(Color::Green)),
-                    Row::new(vec!["MacMini-Edge", "Worker", "8 Cores", "16 GB", "Metal", "0.05", "ONLINE"])
-                        .style(Style::default().fg(Color::Yellow)),
-                ];
+                    );
+                }
+
                 let table = Table::new(
                     rows,
                     [
-                        Constraint::Length(13),
+                        Constraint::Length(14),
                         Constraint::Length(12),
                         Constraint::Length(10),
-                        Constraint::Length(8),
-                        Constraint::Length(8),
+                        Constraint::Length(9),
+                        Constraint::Length(7),
                         Constraint::Length(7),
                         Constraint::Length(8),
                     ],
                 )
-                .header(Row::new(vec!["Node Name", "Role", "Cores", "RAM", "Accel", "Load", "Status"]).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)))
-                .block(Block::default().title(" 🖥️ Mesh Cluster Topology ").borders(Borders::ALL));
+                .header(
+                    Row::new(vec![
+                        "Node Name",
+                        "Role",
+                        "Cores",
+                        "RAM",
+                        "Accel",
+                        "Load",
+                        "Status",
+                    ])
+                    .style(
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                )
+                .block(
+                    Block::default()
+                        .title(" 🖥️ Mesh Cluster Topology (Live Host Metrics) ")
+                        .borders(Borders::ALL),
+                );
                 f.render_widget(table, left_chunks[0]);
 
-                // Gauges & Stats block
+                let node_count = 1 + sorted_peers.len();
                 let stats_text = vec![
-                    Line::from(format!("  ▸ Total Compute:     {} CPU Cores across 3 Heterogeneous Nodes", s.cluster_cores)),
-                    Line::from(format!("  ▸ Total Memory:      {} GB Unified / System RAM", s.cluster_ram_gb)),
-                    Line::from(format!("  ▸ Auctions Settled:  {} Completed (100% Success Rate)", s.completed_tasks)),
-                    Line::from(format!("  ▸ CRDT Lamport Clock: L={}", s.lamport_clock)),
+                    Line::from(format!(
+                        "  ▸ Total Compute:      {} Logical Cores across {} Nodes",
+                        total_cores, node_count
+                    )),
+                    Line::from(format!(
+                        "  ▸ Total Memory:       {} across {} Nodes",
+                        format_ram(total_ram_mb),
+                        node_count
+                    )),
+                    Line::from(format!(
+                        "  ▸ Auctions Settled:   {} ok / {} failed ({} total)",
+                        s.completed_tasks, s.failed_tasks, s.total_auctions
+                    )),
+                    Line::from(format!(
+                        "  ▸ CRDT State:         L={} ({} synced entries)",
+                        lamport_clock, crdt_entries
+                    )),
                 ];
-                let stats_widget = Paragraph::new(stats_text).block(Block::default().title(" 📊 Distributed Metrics & CRDT State ").borders(Borders::ALL));
+                let stats_widget = Paragraph::new(stats_text).block(
+                    Block::default()
+                        .title(" 📊 Distributed Metrics & CRDT State ")
+                        .borders(Borders::ALL),
+                );
                 f.render_widget(stats_widget, left_chunks[1]);
 
-                // Right Column: Live Spore Auction Event Stream
                 let log_items: Vec<ListItem> = s
                     .log_events
                     .iter()
                     .rev()
-                    .take(15)
+                    .take(18)
                     .map(|msg| {
-                        let color = if msg.contains("Awarded") || msg.contains("124 passed") {
+                        let color = if msg.contains("[RECEIPT]") || msg.contains("✓") {
                             Color::LightGreen
-                        } else if msg.contains("RFQ") || msg.contains("Spore") {
+                        } else if msg.contains("[ERR]") {
+                            Color::LightRed
+                        } else if msg.contains("[RFQ]") || msg.contains("Spore") {
                             Color::LightYellow
-                        } else if msg.contains("BID") {
+                        } else if msg.contains("[BID]") || msg.contains("[AWARD]") {
                             Color::LightCyan
                         } else {
                             Color::Gray
                         };
-                        ListItem::new(Line::from(vec![Span::styled(msg.as_str(), Style::default().fg(color))]))
+                        ListItem::new(Line::from(vec![Span::styled(
+                            msg.as_str(),
+                            Style::default().fg(color),
+                        )]))
                     })
                     .collect();
 
-                let list = List::new(log_items).block(Block::default().title(" ⚡ Live Spore Auction Stream ").borders(Borders::ALL));
+                let list = List::new(log_items).block(
+                    Block::default()
+                        .title(" ⚡ Live Spore Auction Stream ")
+                        .borders(Borders::ALL),
+                );
                 f.render_widget(list, body_chunks[1]);
 
-                // 3. Footer
                 let footer_text = vec![Line::from(vec![
-                    Span::styled(" [d] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                    Span::raw("Dispatch Test Suite   "),
-                    Span::styled(" [s] ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                    Span::raw("Dispatch SLM Inference   "),
-                    Span::styled(" [c] ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-                    Span::raw("Clear Ticker   "),
-                    Span::styled(" [q] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-                    Span::raw("Exit Dashboard"),
+                    Span::styled(
+                        " [d] ",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("Bash Probe  "),
+                    Span::styled(
+                        " [r] ",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("Rust Compile  "),
+                    Span::styled(
+                        " [s] ",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("Local SLM  "),
+                    Span::styled(
+                        " [c] ",
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("Clear  "),
+                    Span::styled(
+                        " [q] ",
+                        Style::default()
+                            .fg(Color::Red)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("Quit"),
                 ])];
                 let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
                 f.render_widget(footer, chunks[2]);
@@ -215,49 +392,36 @@ pub async fn run_dashboard() -> Result<(), Box<dyn std::error::Error>> {
                         s.log_events.push("✓ Event ticker cleared".into());
                     }
                     KeyCode::Char('d') => {
-                        let state_clone = state.clone();
-                        let coord = node_coord.clone();
-                        tokio::spawn(async move {
-                            {
-                                let mut s = state_clone.lock().await;
-                                s.log_events.push("▸ [RFQ] Dispatched 'cargo test --workspace' (min_cores=32)".into());
-                                s.total_auctions += 1;
-                                s.lamport_clock += 1;
-                            }
-                            let mut task = TaskSpec::new("workspace_tests", TaskKind::TestSuite, "echo '124 passed; 0 failed'");
-                            task.min_cpu_cores = 32;
-
-                            if let Ok(result) = coord.dispatch_task(task, 100, 150).await {
-                                let mut s = state_clone.lock().await;
-                                s.log_events.push("⚡ [BID] Linux-Workstation-64Core: 12 cr (Est 90ms)".into());
-                                s.log_events.push(format!("🏆 [AWARD] Linux-64Core won contract! (dur: {}ms)", result.execution_time_ms));
-                                s.log_events.push(format!("✓ [RECEIPT] Output: {}", result.stdout.trim()));
-                                s.completed_tasks += 1;
-                                s.lamport_clock += 2;
-                            }
-                        });
+                        spawn_tui_task(
+                            state.clone(),
+                            node_coord.clone(),
+                            peer_names.clone(),
+                            TaskSpec::new("host_probe", TaskKind::BashScript, "uname -ms && uptime"),
+                        );
+                    }
+                    KeyCode::Char('r') => {
+                        spawn_tui_task(
+                            state.clone(),
+                            node_coord.clone(),
+                            peer_names.clone(),
+                            TaskSpec::new(
+                                "rustc_exec",
+                                TaskKind::RustCompilation,
+                                r#"fn main() { println!("rustc_mesh_ok={}", 21 * 2); }"#,
+                            ),
+                        );
                     }
                     KeyCode::Char('s') => {
-                        let state_clone = state.clone();
-                        let coord = node_coord.clone();
-                        tokio::spawn(async move {
-                            {
-                                let mut s = state_clone.lock().await;
-                                s.log_events.push("▸ [RFQ] Dispatched SLM Inference: 'Gemma 2 PR Summary'".into());
-                                s.total_auctions += 1;
-                                s.lamport_clock += 1;
-                            }
-                            let task = TaskSpec::new("gemma_summary", TaskKind::SlmInference, "Gemma 2 reasoning pass");
-
-                            if let Ok(result) = coord.dispatch_task(task, 100, 150).await {
-                                let mut s = state_clone.lock().await;
-                                s.log_events.push("⚡ [BID] MacMini-Edge-01: 10 cr (Est 65ms, Load 0.05)".into());
-                                s.log_events.push(format!("🏆 [AWARD] MacMini-Edge-01 won contract! (dur: {}ms)", result.execution_time_ms));
-                                s.log_events.push(format!("✓ [RECEIPT] {}", result.stdout.trim()));
-                                s.completed_tasks += 1;
-                                s.lamport_clock += 2;
-                            }
-                        });
+                        spawn_tui_task(
+                            state.clone(),
+                            node_coord.clone(),
+                            peer_names.clone(),
+                            TaskSpec::new(
+                                "slm_infer",
+                                TaskKind::SlmInference,
+                                "Summarize Mycel in one sentence.",
+                            ),
+                        );
                     }
                     _ => {}
                 }
@@ -269,9 +433,68 @@ pub async fn run_dashboard() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    drop(_guard);
     terminal.show_cursor()?;
     println!("✓ Mycel TUI exited gracefully.");
     Ok(())
+}
+
+fn spawn_tui_task(
+    state: Arc<Mutex<TuiState>>,
+    coord: Arc<NodeDaemon>,
+    peer_names: Arc<HashMap<String, String>>,
+    task: TaskSpec,
+) {
+    tokio::spawn(async move {
+        let task_name = task.name.clone();
+        let task_kind = format!("{:?}", task.kind);
+        {
+            let mut s = state.lock().await;
+            s.log_events
+                .push(format!("▸ [RFQ] Dispatched '{}' ({})", task_name, task_kind));
+            s.total_auctions += 1;
+        }
+
+        match coord.dispatch_task_with_session(task, 100, 150).await {
+            Ok((result, session)) => {
+                let mut s = state.lock().await;
+                for bid in &session.bids {
+                    let bname = peer_names
+                        .get(&bid.bidder_peer_id)
+                        .map(String::as_str)
+                        .unwrap_or(&bid.bidder_peer_id);
+                    s.log_events.push(format!(
+                        "⚡ [BID] {}: {} cr (est {}ms, score {:.1})",
+                        bname, bid.price, bid.estimated_duration_ms, bid.node_score
+                    ));
+                }
+                let winner = peer_names
+                    .get(&result.worker_peer_id)
+                    .map(String::as_str)
+                    .unwrap_or(&result.worker_peer_id);
+                s.log_events.push(format!(
+                    "🏆 [AWARD] {} won contract ({}ms)",
+                    winner, result.execution_time_ms
+                ));
+                if result.success {
+                    s.completed_tasks += 1;
+                    s.log_events
+                        .push(format!("✓ [RECEIPT] {}", result.stdout.trim()));
+                } else {
+                    s.failed_tasks += 1;
+                    let err_msg = if result.stderr.trim().is_empty() {
+                        format!("exit={}", result.exit_code)
+                    } else {
+                        result.stderr.trim().to_string()
+                    };
+                    s.log_events.push(format!("✗ [ERR] {}", err_msg));
+                }
+            }
+            Err(e) => {
+                let mut s = state.lock().await;
+                s.failed_tasks += 1;
+                s.log_events.push(format!("✗ [ERR] Auction failed: {}", e));
+            }
+        }
+    });
 }
