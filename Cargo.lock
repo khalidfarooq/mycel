@@ -789,6 +789,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "rand",
+ "ring",
  "serde",
  "sha2",
  "thiserror",
@@ -806,6 +807,7 @@ dependencies = [
  "mycel-proto",
  "serde",
  "serde_json",
+ "socket2",
  "thiserror",
  "tokio",
  "tracing",
@@ -821,6 +823,7 @@ dependencies = [
  "mycel-crypto",
  "mycel-net",
  "mycel-proto",
+ "serde_json",
  "thiserror",
  "tokio",
  "tracing",
@@ -832,6 +835,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "chrono",
+ "libc",
  "serde",
  "serde_json",
  "thiserror",
@@ -1060,6 +1064,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
+name = "ring"
+version = "0.17.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c17fa4cb658e3583423e915b9f3acc01cceaee1860e33d59ebae66adc3a2dc0d"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "getrandom",
+ "libc",
+ "spin",
+ "untrusted",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1217,6 +1236,12 @@ dependencies = [
  "libc",
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 
 [[package]]
 name = "spki"
@@ -1453,6 +1478,12 @@ name = "unicode-width"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
+
+[[package]]
+name = "untrusted"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "utf8parse"

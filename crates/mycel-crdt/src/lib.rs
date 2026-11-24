@@ -141,6 +141,21 @@ impl CrdtStore {
         peers_lock.values().cloned().collect()
     }
 
+    /// Current Lamport logical clock value
+    pub fn lamport_clock(&self) -> u64 {
+        *self.lamport_clock.read().unwrap()
+    }
+
+    /// Number of entries currently stored
+    pub fn len(&self) -> usize {
+        self.entries.read().unwrap().len()
+    }
+
+    /// Returns true if no entries are stored
+    pub fn is_empty(&self) -> bool {
+        self.entries.read().unwrap().is_empty()
+    }
+
     /// Export all state as deltas for full sync upon partition recovery
     pub fn export_deltas(&self) -> Vec<CrdtDelta> {
         let entries_lock = self.entries.read().unwrap();
@@ -186,8 +201,8 @@ mod tests {
 
     #[test]
     fn test_tie_breaking_deterministic() {
-        let node_a = CrdtStore::new("node_aaa");
-        let node_b = CrdtStore::new("node_zzz");
+        let _node_a = CrdtStore::new("node_aaa");
+        let _node_b = CrdtStore::new("node_zzz");
 
         let delta_a = CrdtDelta {
             key: "conflict".into(),
